@@ -1,4 +1,4 @@
-# chat
+# Aplicativo Chat
 
 A new Flutter project.
 
