@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:chat/chat_message.dart';
 
 class ChatScreen extends StatefulWidget {
   @override
@@ -17,18 +18,21 @@ class _ChatScreenState extends State<ChatScreen> {
 
   final GlobalKey<ScaffoldState> _globalKey = GlobalKey<ScaffoldState>();
 
-  User _currentUser;
+  FirebaseUser _currentUser;
+  bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
 
-    FirebaseAuth.instance.authStateChanges().listen((user) {
-      _currentUser = user;
+    FirebaseAuth.instance.onAuthStateChanged.listen((user) {
+      setState(() {
+        _currentUser = user;
+      });
     });
   }
 
-  Future<User> _getUser() async {
+  Future<FirebaseUser> _getUser() async {
     if (_currentUser != null) return _currentUser;
 
     try {
@@ -38,14 +42,14 @@ class _ChatScreenState extends State<ChatScreen> {
       final GoogleSignInAuthentication googleSignInAuthentication =
           await googleSignInAccount.authentication;
 
-      final AuthCredential credential = GoogleAuthProvider.credential(
+      final AuthCredential credential = GoogleAuthProvider.getCredential(
           accessToken: googleSignInAuthentication.accessToken,
           idToken: googleSignInAuthentication.idToken);
 
-      final UserCredential userCredential =
+      final AuthResult userCredential =
           await FirebaseAuth.instance.signInWithCredential(credential);
 
-      final User user = userCredential.user;
+      final FirebaseUser user = userCredential.user;
       return user;
     } catch (erro) {
       return null;
@@ -53,35 +57,45 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _sendMessage({String text, File imageFile}) async {
-    final User user = await _getUser();
+    final FirebaseUser user = await _getUser();
 
     if (user == null) {
       _globalKey.currentState.showSnackBar(SnackBar(
-        content: Text("Não foi possível fazer o login. Tente novamente!"),
+        content: Text('Não foi possível fazer o login. Tente novamente!',
+            textAlign: TextAlign.center),
         backgroundColor: Colors.red,
       ));
     }
 
     Map<String, dynamic> data = {
-      "uid": user.uid,
-      "senderName": user.displayName,
-      "senderPhotoUrl": user.photoURL,
-      
+      'uid': user.uid,
+      'senderName': user.displayName,
+      'senderPhotoUrl': user.photoUrl,
+      'time': Timestamp.now()
     };
 
     if (imageFile != null) {
-      UploadTask task = FirebaseStorage.instance
+      StorageUploadTask task = FirebaseStorage.instance
           .ref()
+          .child(user.uid)
           .child(DateTime.now().millisecondsSinceEpoch.toString())
           .putFile(imageFile);
 
-      TaskSnapshot snapshot = await task;
-      String url = await snapshot.ref.getDownloadURL();
-      data["imageUrl"] = url;
-    }
-    if (text != null) data["texto"] = text;
+      setState(() {
+        _isLoading = true;
+      });
 
-    FirebaseFirestore.instance.collection("messages").add({"Texto": text});
+      StorageTaskSnapshot snapshot = await task.onComplete;
+      String url = await snapshot.ref.getDownloadURL();
+      data['imageUrl'] = url;
+
+      setState(() {
+        _isLoading = false;
+      });
+    }
+    if (text != null) data['texto'] = text;
+
+    Firestore.instance.collection('messages').add(data);
   }
 
   @override
@@ -89,15 +103,36 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       key: _globalKey,
       appBar: AppBar(
-        title: Text("teste"),
+        title: Text(_currentUser != null
+            ? 'Olá, ${_currentUser.displayName}'
+            : 'Chat App'),
         elevation: 0,
+        centerTitle: true,
+        actions: [
+          _currentUser != null
+              ? IconButton(
+                  icon: Icon(Icons.exit_to_app),
+                  onPressed: () {
+                    FirebaseAuth.instance.signOut();
+                    googleSignIn.signOut();
+                    _globalKey.currentState.showSnackBar(SnackBar(
+                      content: Text(
+                        'Você saiu com sucesso!',
+                        textAlign: TextAlign.center,
+                      ),
+                    ));
+                  })
+              : Container()
+        ],
       ),
       body: Column(
         children: [
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream:
-                  FirebaseFirestore.instance.collection("messages").snapshots(),
+              stream: Firestore.instance
+                  .collection('messages')
+                  .orderBy('time')
+                  .snapshots(),
               builder: (context, snapshot) {
                 switch (snapshot.connectionState) {
                   case ConnectionState.none:
@@ -107,21 +142,20 @@ class _ChatScreenState extends State<ChatScreen> {
                     );
                   default:
                     List<DocumentSnapshot> documents =
-                        snapshot.data.docs.reversed.toList();
-
+                        snapshot.data.documents.reversed.toList();
                     return ListView.builder(
                       reverse: true,
                       itemCount: documents.length,
                       itemBuilder: (context, index) {
-                        return ListTile(
-                          title: Text(documents[index].data()["texto"]),
-                        );
+                        return ChatMessage(documents[index].data,
+                            documents[index].data['uid'] == _currentUser?.uid);
                       },
                     );
                 }
               },
             ),
           ),
+          _isLoading ? LinearProgressIndicator() : Container(),
           TextComposer(_sendMessage),
         ],
       ),
